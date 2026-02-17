@@ -17,7 +17,7 @@ on:
         required: true
         default: "org.openrewrite.java.migrate.UpgradeToJava17"
         type: string
-        
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -29,6 +29,7 @@ jobs:
         with:
           app_id: ${{ secrets.MIGRATION_APP_ID }}
           private_key: ${{ secrets.MIGRATION_APP_PRIVATE_KEY }}
+          repository: ${{ inputs.repository }}
 
       - name: Checkout Target Repository
         uses: actions/checkout@v4
