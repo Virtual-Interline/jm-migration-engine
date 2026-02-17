@@ -1,9 +1,23 @@
-name: PR Check
+name: Run Migration On Any Repo
 
 on:
-  pull_request:
-    branches: [ main ]
-
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: "Target repository (org/repo)"
+        required: true
+        type: string
+      javaVersion:
+        description: "Target Java version"
+        required: true
+        default: "17"
+        type: string
+      recipe:
+        description: "OpenRewrite recipe"
+        required: true
+        default: "org.openrewrite.java.migrate.UpgradeToJava17"
+        type: string
+        
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -61,4 +75,3 @@ jobs:
           branch: rewrite/java-${{ inputs.javaVersion }}
           title: "Automated Java ${{ inputs.javaVersion }} Migration"
           body: "This PR was generated automatically by the migration platform."
-    
