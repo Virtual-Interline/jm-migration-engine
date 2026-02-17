@@ -1,78 +1,147 @@
-name: Run Migration On Any Repo
+name: Execute Java Migration
 
 on:
   workflow_dispatch:
     inputs:
-      repository:
-        description: "Target repository (org/repo)"
+      target_repo:
+        description: 'Target repository (org/repo-name)'
         required: true
         type: string
-      javaVersion:
-        description: "Target Java version"
-        required: true
-        default: "17"
+      target_branch:
+        description: 'Branch to create for migration'
+        required: false
+        default: 'migration/java-25'
         type: string
-      recipe:
-        description: "OpenRewrite recipe"
+      source_java_version:
+        description: 'Current Java version'
         required: true
-        default: "org.openrewrite.java.migrate.UpgradeToJava17"
-        type: string
+        type: choice
+        options:
+          - '8'
+          - '11'
+          - '17'
+          - '21'
+      dry_run:
+        description: 'Dry run (no PR creation)'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
-  build:
+  migrate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
 
     steps:
-      - name: Generate GitHub App Token
-        id: app-token
-        uses: tibdex/github-app-token@v2
-        with:
-          app_id: ${{ secrets.MIGRATION_APP_ID }}
-          private_key: ${{ secrets.MIGRATION_APP_PRIVATE_KEY }}
-          repositories: ${{ inputs.repository }}
-
-      - name: Checkout Target Repository
+      - name: Checkout migration-hub
         uses: actions/checkout@v4
         with:
-          repository: ${{ inputs.repository }}
-          token: ${{ steps.app-token.outputs.token }}
+          path: migration-hub
+
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.target_repo }}
+          token: ${{ secrets.MIGRATION_PAT }}
           path: target-repo
 
-      - name: Setup Java
+      - name: Set up JDK 25
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: ${{ inputs.javaVersion }}
+          distribution: 'temurin'
+          java-version: '25'
 
-      - name: Run OpenRewrite Migration
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Load learned recipes
+        run: |
+          cd migration-hub
+          python scripts/generate-recipes.py
+
+      - name: Run OpenRewrite migration
         working-directory: target-repo
         run: |
-          mvn -U org.openrewrite.maven:rewrite-maven-plugin:run \
-          -Drewrite.recipe=${{ inputs.recipe }}
+          # Copy migration recipes to target repo
+          mkdir -p .rewrite
+          cp -r ../migration-hub/recipes/* .rewrite/
 
-      - name: Build Validation
-        working-directory: target-repo
-        run: mvn -B -DskipTests clean verify
+          # Detect build system and run appropriate migration
+          if [ -f "pom.xml" ]; then
+            echo "Detected Maven project"
+            ../migration-hub/scripts/run-maven-migration.sh ${{ inputs.source_java_version }}
+          elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
+            echo "Detected Gradle project"
+            ../migration-hub/scripts/run-gradle-migration.sh ${{ inputs.source_java_version }}
+          else
+            echo "Unknown build system"
+            exit 1
+          fi
 
-      - name: Create Branch
-        working-directory: target-repo
+      - name: Analyze migration results
+        if: success()
         run: |
-          git checkout -b rewrite/java-${{ inputs.javaVersion }}
-          git config user.name "migration-bot"
-          git config user.email "migration@company.com"
-          git add .
-          git commit -m "Automated Java ${{ inputs.javaVersion }} Migration"
-
-      - name: Push Changes
-        working-directory: target-repo
-        run: |
-          git push origin rewrite/java-${{ inputs.javaVersion }}
+          cd migration-hub
+          python scripts/analyze-migration.py \
+            "${{ inputs.target_repo }}" \
+            ../target-repo/build/rewrite/datatables
 
       - name: Create Pull Request
+        if: ${{ !inputs.dry_run && success() }}
         uses: peter-evans/create-pull-request@v6
         with:
-          token: ${{ steps.app-token.outputs.token }}
-          repository: ${{ inputs.repository }}
-          branch: rewrite/java-${{ inputs.javaVersion }}
-          title: "Automated Java ${{ inputs.javaVersion }} Migration"
-          body: "This PR was generated automatically by the migration platform."
+          path: target-repo
+          token: ${{ secrets.MIGRATION_PAT }}
+          branch: ${{ inputs.target_branch }}
+          title: 'chore: Migrate to Java 25'
+          body: |
+            ## Java 25 Migration
+
+            This PR migrates the application from Java ${{ inputs.source_java_version }} to Java 25.
+
+            ### Changes Applied
+            - OpenRewrite automated migrations
+            - Learned patterns from previous migrations
+            - Common fixes and best practices
+
+            ### Next Steps
+            - [ ] Review automated changes
+            - [ ] Run tests locally
+            - [ ] Update CI/CD configuration if needed
+            - [ ] Check for any manual migration steps in comments
+
+            ### Migration Report
+            See workflow artifacts for detailed migration analysis.
+
+            ---
+            🤖 Generated by migration-hub workflow
+
+      - name: Update learnings repository
+        if: success()
+        working-directory: migration-hub
+        run: |
+          git config user.name "Migration Bot"
+          git config user.email "migration-bot@company.com"
+
+          git add learnings/
+          git add recipes/learned/
+
+          if git diff --staged --quiet; then
+            echo "No new learnings to commit"
+          else
+            git commit -m "learn: Add patterns from ${{ inputs.target_repo }} migration"
+            git push
+          fi
+
+      - name: Upload migration report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-report-${{ inputs.target_repo }}
+          path: |
+            target-repo/build/rewrite/
+            migration-hub/learnings/migrations.json
