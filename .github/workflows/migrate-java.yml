@@ -1,0 +1,64 @@
+name: PR Check
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.MIGRATION_APP_ID }}
+          private_key: ${{ secrets.MIGRATION_APP_PRIVATE_KEY }}
+
+      - name: Checkout Target Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repository }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: target-repo
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.javaVersion }}
+
+      - name: Run OpenRewrite Migration
+        working-directory: target-repo
+        run: |
+          mvn -U org.openrewrite.maven:rewrite-maven-plugin:run \
+          -Drewrite.recipe=${{ inputs.recipe }}
+
+      - name: Build Validation
+        working-directory: target-repo
+        run: mvn -B -DskipTests clean verify
+
+      - name: Create Branch
+        working-directory: target-repo
+        run: |
+          git checkout -b rewrite/java-${{ inputs.javaVersion }}
+          git config user.name "migration-bot"
+          git config user.email "migration@company.com"
+          git add .
+          git commit -m "Automated Java ${{ inputs.javaVersion }} Migration"
+
+      - name: Push Changes
+        working-directory: target-repo
+        run: |
+          git push origin rewrite/java-${{ inputs.javaVersion }}
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          repository: ${{ inputs.repository }}
+          branch: rewrite/java-${{ inputs.javaVersion }}
+          title: "Automated Java ${{ inputs.javaVersion }} Migration"
+          body: "This PR was generated automatically by the migration platform."
+    
